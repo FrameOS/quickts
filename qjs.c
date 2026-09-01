@@ -98,6 +98,7 @@ static int eval_file(JSContext *ctx, const char *filename, int module, int stric
         if (strict)
             eval_flags |= JS_EVAL_FLAG_STRICT;
     }
+    eval_flags |= quickts_eval_flags(filename);
     ret = eval_buf(ctx, buf, buf_len, filename, eval_flags);
     js_free(ctx, buf);
     return ret;

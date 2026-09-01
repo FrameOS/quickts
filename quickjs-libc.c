@@ -720,7 +720,8 @@ JSModuleDef *js_module_loader(JSContext *ctx,
             JSValue func_val;
             /* compile the module */
             func_val = JS_Eval(ctx, (char *)buf, buf_len, module_name,
-                               JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY);
+                               JS_EVAL_TYPE_MODULE | JS_EVAL_FLAG_COMPILE_ONLY |
+                               quickts_eval_flags(module_name));
             js_free(ctx, buf);
             if (JS_IsException(func_val))
                 return NULL;

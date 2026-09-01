@@ -555,3 +555,10 @@ benchmarks: run_sunspider_like run_octane
 	./run_octane $(BENCHMARKDIR)/
 
 -include $(wildcard $(OBJDIR)/*.d)
+
+# quickts: TypeScript / JSX tests (see README.md and tests/quickts/)
+test-quickts: qjs$(EXE) qjsc$(EXE)
+	python3 tests/quickts/run.py ./qjs$(EXE)
+	sh tests/quickts/upstream_as_ts.sh
+	sh tests/quickts/bytecode_diff.sh
+	sh tests/quickts/corpus_parse.sh

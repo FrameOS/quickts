@@ -21876,6 +21876,11 @@ typedef struct JSVarDef {
     int func_pool_idx;
 } JSVarDef;
 
+typedef struct {
+    JSAtom name;
+    int arg;
+} TSParamProp;
+
 typedef struct JSFunctionDef {
     JSContext *ctx;
     struct JSFunctionDef *parent;
@@ -21989,6 +21994,12 @@ typedef struct JSFunctionDef {
 
     JSModuleDef *module; /* != NULL when parsing a module */
     BOOL has_await; /* TRUE if await is used (used in module eval) */
+
+    /* quickts: TypeScript constructor parameter properties. A pointer, not
+       an inline array: 16 slots inline would cost 192 bytes on every
+       function definition in the file. */
+    int ts_pprop_count;
+    TSParamProp *ts_pprops;
 } JSFunctionDef;
 
 typedef struct JSToken {
@@ -22029,6 +22040,12 @@ typedef struct JSParseState {
     BOOL is_module; /* parsing a module */
     BOOL allow_html_comments;
     BOOL ext_json; /* JSON parsing: true if accepting JSON superset */
+    BOOL ts; /* quickts: erase TypeScript type syntax */
+    BOOL jsx; /* quickts: lower JSX to factory calls */
+    int ts_quiet; /* quickts: inside a speculative parse, raise no error */
+    BOOL ts_member_erase; /* quickts: class member had abstract/declare */
+    BOOL ts_cond_true; /* quickts: next assignment expr is a `?` branch */
+    BOOL ts_arrow_in_cond; /* quickts: arrow lookahead is inside a `?` branch */
     GetLineColCache get_line_col_cache;
 } JSParseState;
 
@@ -22069,6 +22086,7 @@ static const JSOpCode opcode_info[OP_COUNT + (OP_TEMP_END - OP_TEMP_START)] = {
 #endif
 
 static __exception int next_token(JSParseState *s);
+static __exception int ts_type_params(JSParseState *s);
 
 static void free_token(JSParseState *s, JSToken *token)
 {
@@ -24570,7 +24588,8 @@ static int __exception js_parse_property_name(JSParseState *s,
         if (is_non_reserved_ident &&
             prop_type == PROP_TYPE_IDENT && allow_var) {
             if (!(s->token.val == ':' ||
-                  (s->token.val == '(' && allow_method))) {
+                  ((s->token.val == '(' || (s->ts && s->token.val == '<')) &&
+                   allow_method))) {
                 prop_type = PROP_TYPE_VAR;
             }
         }
@@ -24603,6 +24622,10 @@ static int __exception js_parse_property_name(JSParseState *s,
         is_private = PROP_TYPE_PRIVATE;
     } else {
         goto invalid_prop;
+    }
+    if (s->ts && s->token.val == '<' && ts_type_params(s)) {
+        JS_FreeAtom(s->ctx, name);
+        goto fail;
     }
     if (prop_type != PROP_TYPE_IDENT && prop_type != PROP_TYPE_VAR &&
         s->token.val != '(') {
@@ -24638,6 +24661,8 @@ static __exception int js_parse_seek_token(JSParseState *s, const JSParsePos *sp
     s->got_lf = sp->got_lf;
     return next_token(s);
 }
+
+#include "quickts.h"
 
 /* return TRUE if a regexp literal is allowed after this token */
 static BOOL is_regexp_allowed(int tok)
@@ -24786,6 +24811,8 @@ static int js_parse_skip_parens_token(JSParseState *s, int *pbits, BOOL no_line_
                 tok = TOK_OF;
             if (no_line_terminator && has_lf_in_range(last_token_ptr, s->token.ptr))
                 tok = '\n';
+            if (s->ts && tok == ':')
+                tok = ts_scan_past_annotation(s);
             break;
         }
     }
@@ -25194,6 +25221,9 @@ static __exception int js_parse_class(JSParseState *s, BOOL is_class_expr,
         class_var_name = JS_DupAtom(ctx, class_var_name);
     }
 
+    if (ts_type_params(s))
+        goto fail;
+
     push_scope(s);
 
     if (s->token.val == TOK_EXTENDS) {
@@ -25202,9 +25232,14 @@ static __exception int js_parse_class(JSParseState *s, BOOL is_class_expr,
             goto fail;
         if (js_parse_left_hand_side_expr(s))
             goto fail;
+        if (s->ts && s->token.val == '<' && ts_skip_bracketed(s))
+            goto fail;
     } else {
         emit_op(s, OP_undefined);
     }
+
+    if (ts_implements_clause(s))
+        goto fail;
 
     /* add a 'const' definition for the class name */
     if (class_name != JS_ATOM_NULL) {
@@ -25252,6 +25287,11 @@ static __exception int js_parse_class(JSParseState *s, BOOL is_class_expr,
                 goto fail;
             continue;
         }
+        s->ts_member_erase = FALSE;
+        if (ts_member_modifiers(s))
+            goto fail;
+        if (s->ts && (s->token.val == '}' || s->token.val == ';'))
+            continue;
         is_static = FALSE;
         if (s->token.val == TOK_STATIC) {
             int next = peek_token(s, TRUE);
@@ -25304,6 +25344,21 @@ static __exception int js_parse_class(JSParseState *s, BOOL is_class_expr,
                 prop_type = PROP_TYPE_IDENT;
             }
         }
+        if (s->ts && prop_type < 0) {
+            int r;
+            if (ts_member_modifiers(s))
+                goto fail;
+            r = ts_try_index_signature(s);
+            if (r < 0)
+                goto fail;
+            if (r > 0)
+                continue;
+            r = ts_try_skip_member_signature(s);
+            if (r < 0)
+                goto fail;
+            if (r > 0)
+                continue;
+        }
         if (is_static)
             emit_op(s, OP_swap);
         start_ptr = s->token.ptr;
@@ -25314,6 +25369,17 @@ static __exception int js_parse_class(JSParseState *s, BOOL is_class_expr,
         }
         is_private = prop_type & PROP_TYPE_PRIVATE;
         prop_type &= ~PROP_TYPE_PRIVATE;
+
+        if (s->ts) {
+            if (prop_type == PROP_TYPE_IDENT && ts_opt_marker(s))
+                goto fail;
+            if (s->token.val == '<') {
+                if (ts_skip_bracketed(s))   /* method type parameters */
+                    goto fail;
+            } else if (prop_type == PROP_TYPE_IDENT && ts_annotation(s)) {
+                goto fail;
+            }
+        }
 
         if ((name == JS_ATOM_constructor && !is_static &&
              prop_type != PROP_TYPE_IDENT) ||
@@ -26652,6 +26718,8 @@ static int js_parse_destructuring_element(JSParseState *s, int tok, int is_arg,
     } else {
         return js_parse_error(s, "invalid assignment syntax");
     }
+    if (ts_annotation(s))
+        return -1;
     if (s->token.val == '=' && allow_initializer) {
         label_done = emit_goto(s, OP_goto, -1);
         if (next_token(s))
@@ -26975,7 +27043,14 @@ static __exception int js_parse_postfix_expr(JSParseState *s, int parse_flags)
             emit_op(s, OP_import);
         }
         break;
+    case '<':
+        if (!s->jsx)
+            goto unexpected_token;
+        if (ts_parse_jsx(s))
+            return -1;
+        break;
     default:
+    unexpected_token:
         return js_parse_error(s, "unexpected token in expression: '%.*s'",
                               (int)(s->buf_ptr - s->token.ptr), s->token.ptr);
     }
@@ -26984,6 +27059,21 @@ static __exception int js_parse_postfix_expr(JSParseState *s, int parse_flags)
     for(;;) {
         JSFunctionDef *fd = s->cur_func;
         BOOL has_optional_chain = FALSE;
+
+        if (s->ts) {
+            int r;
+            if (s->token.val == '!' && !s->got_lf) {
+                /* non-null assertion */
+                if (next_token(s))
+                    return -1;
+                continue;
+            }
+            r = ts_try_call_type_args(s);
+            if (r < 0)
+                return -1;
+            if (r > 0)
+                continue;
+        }
 
         if (s->token.val == TOK_QUESTION_MARK_DOT) {
             if ((parse_flags & PF_POSTFIX_CALL) == 0)
@@ -27240,6 +27330,7 @@ static __exception int js_parse_postfix_expr(JSParseState *s, int parse_flags)
                         emit_u16(s, 0);
 
                         emit_class_field_init(s);
+                        ts_emit_param_props(s);
                     } else if (call_type == FUNC_CALL_NEW) {
                         /* obj func array -> func obj array */
                         emit_op(s, OP_perm3);
@@ -27285,6 +27376,7 @@ static __exception int js_parse_postfix_expr(JSParseState *s, int parse_flags)
                         emit_u16(s, 0);
 
                         emit_class_field_init(s);
+                        ts_emit_param_props(s);
                     } else if (call_type == FUNC_CALL_NEW) {
                         emit_op(s, OP_call_constructor);
                         emit_u16(s, arg_count);
@@ -27648,6 +27740,13 @@ static __exception int js_parse_expr_binary(JSParseState *s, int level,
             return -1;
     }
     for(;;) {
+        if (level == 4 && ts_is_assertion_op(s)) {
+            if (next_token(s))
+                return -1;
+            if (ts_skip_type(s))
+                return -1;
+            continue;
+        }
         op = s->token.val;
         op_token_ptr = s->token.ptr;
         switch(level) {
@@ -27861,6 +27960,7 @@ static __exception int js_parse_cond_expr(JSParseState *s, int parse_flags)
             return -1;
         label1 = emit_goto(s, OP_if_false, -1);
 
+        s->ts_cond_true = TRUE;
         if (js_parse_assign_expr(s))
             return -1;
         if (js_parse_expect(s, ':'))
@@ -27884,6 +27984,10 @@ static __exception int js_parse_assign_expr2(JSParseState *s, int parse_flags)
     int opcode, op, scope, skip_bits;
     JSAtom name0 = JS_ATOM_NULL;
     JSAtom name;
+    BOOL ts_in_cond_true = s->ts_cond_true;
+
+    /* consumed here so nested expressions (parens, bodies) start clean */
+    s->ts_cond_true = FALSE;
 
     if (s->token.val == TOK_YIELD) {
         BOOL is_star = FALSE, is_async;
@@ -28023,7 +28127,11 @@ static __exception int js_parse_assign_expr2(JSParseState *s, int parse_flags)
         }
         return 0;
     } else if (s->token.val == '(' &&
-               js_parse_skip_parens_token(s, NULL, TRUE) == TOK_ARROW) {
+               ts_skip_parens_arrow(s, ts_in_cond_true) == TOK_ARROW) {
+        return js_parse_function_decl(s, JS_PARSE_FUNC_ARROW,
+                                      JS_FUNC_NORMAL, JS_ATOM_NULL,
+                                      s->token.ptr);
+    } else if (s->ts && s->token.val == '<' && ts_try_generic_arrow(s) > 0) {
         return js_parse_function_decl(s, JS_PARSE_FUNC_ARROW,
                                       JS_FUNC_NORMAL, JS_ATOM_NULL,
                                       s->token.ptr);
@@ -28042,9 +28150,10 @@ static __exception int js_parse_assign_expr2(JSParseState *s, int parse_flags)
         if (next_token(s))
             return -1;
         if ((s->token.val == '(' &&
-             js_parse_skip_parens_token(s, NULL, TRUE) == TOK_ARROW) ||
+             ts_skip_parens_arrow(s, ts_in_cond_true) == TOK_ARROW) ||
             (s->token.val == TOK_IDENT && !s->token.u.ident.is_reserved &&
-             peek_token(s, TRUE) == TOK_ARROW)) {
+             peek_token(s, TRUE) == TOK_ARROW) ||
+            (s->token.val == '<' && ts_try_generic_arrow(s) > 0)) {
             return js_parse_function_decl(s, JS_PARSE_FUNC_ARROW,
                                           JS_FUNC_ASYNC, JS_ATOM_NULL,
                                           source_ptr);
@@ -28422,6 +28531,9 @@ static __exception int js_parse_var(JSParseState *s, int parse_flags, int tok,
                     goto var_error;
             }
 
+            if (ts_opt_marker(s) || ts_annotation(s))
+                goto var_error;
+
             if (s->token.val == '=') {
                 const uint8_t *source_ptr = s->token.ptr;
                 if (next_token(s))
@@ -28607,7 +28719,7 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
             var_name = JS_ATOM_NULL;
         } else {
             var_name = JS_DupAtom(ctx, s->token.u.ident.atom);
-            if (next_token(s)) {
+            if (next_token(s) || ts_annotation(s)) {
                 JS_FreeAtom(s->ctx, var_name);
                 return -1;
             }
@@ -28790,6 +28902,21 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
 
     /* specific label handling */
     /* XXX: support multiple labels on loop statements */
+    if (s->ts) {
+        int r = ts_try_type_decl(s);
+        if (r < 0)
+            return -1;
+        if (r > 0)
+            return 0;
+        r = ts_try_enum(s, FALSE);
+        if (r < 0)
+            return -1;
+        if (r > 0)
+            return 0;
+        if (ts_try_abstract_class(s) < 0)
+            return -1;
+    }
+
     label_name = JS_ATOM_NULL;
     if (is_label(s)) {
         BlockEnv *be;
@@ -29337,6 +29464,8 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
                         emit_u32(s, name);
                         emit_u16(s, s->cur_func->scope_level);
                     }
+                    if (ts_annotation(s))
+                        goto fail;
                     if (js_parse_expect(s, ')'))
                         goto fail;
                 }
@@ -31590,6 +31719,26 @@ static __exception int js_parse_export(JSParseState *s)
     if (next_token(s))
         return -1;
 
+    if (s->ts) {
+        int r = ts_try_type_decl(s);
+        if (r < 0)
+            return -1;
+        if (r > 0)
+            return 0;
+        r = ts_try_enum(s, TRUE);
+        if (r < 0)
+            return -1;
+        if (r > 0)
+            return 0;
+        if (ts_try_abstract_class(s) < 0)
+            return -1;
+        r = ts_try_type_only_clause(s);
+        if (r < 0)
+            return -1;
+        if (r > 0)
+            return 0;
+    }
+
     tok = s->token.val;
     if (tok == TOK_CLASS) {
         return js_parse_class(s, FALSE, JS_PARSE_EXPORT_NAMED);
@@ -31609,6 +31758,18 @@ static __exception int js_parse_export(JSParseState *s)
     case '{':
         first_export = m->export_entries_count;
         while (s->token.val != '}') {
+            {
+                int r = ts_try_type_specifier(s);
+                if (r < 0)
+                    return -1;
+                if (r > 0) {
+                    if (s->token.val != ',')
+                        break;
+                    if (next_token(s))
+                        return -1;
+                    continue;
+                }
+            }
             if (!token_is_ident(s->token.val)) {
                 js_parse_error(s, "identifier expected");
                 return -1;
@@ -31699,6 +31860,8 @@ static __exception int js_parse_export(JSParseState *s)
         }
         break;
     case TOK_DEFAULT:
+        if (ts_try_abstract_class(s) < 0)
+            return -1;
         if (s->token.val == TOK_CLASS) {
             return js_parse_class(s, FALSE, JS_PARSE_EXPORT_DEFAULT);
         } else if (s->token.val == TOK_FUNCTION ||
@@ -31789,6 +31952,14 @@ static __exception int js_parse_import(JSParseState *s)
     if (next_token(s))
         return -1;
 
+    if (s->ts) {
+        int r = ts_try_type_only_clause(s);
+        if (r < 0)
+            return -1;
+        if (r > 0)
+            return 0;
+    }
+
     first_import = m->import_entries_count;
     if (s->token.val == TOK_STRING) {
         module_name = JS_ValueToAtom(ctx, s->token.u.str.str);
@@ -31851,6 +32022,18 @@ static __exception int js_parse_import(JSParseState *s)
 
             while (s->token.val != '}') {
                 BOOL is_string;
+                {
+                    int r = ts_try_type_specifier(s);
+                    if (r < 0)
+                        return -1;
+                    if (r > 0) {
+                        if (s->token.val != ',')
+                            break;
+                        if (next_token(s))
+                            return -1;
+                        continue;
+                    }
+                }
                 if (s->token.val == TOK_STRING) {
                     is_string = TRUE;
                     if (js_string_find_invalid_codepoint(JS_VALUE_GET_STRING(s->token.u.str.str)) >= 0) {
@@ -32067,6 +32250,10 @@ static void js_free_function_def(JSContext *ctx, JSFunctionDef *fd)
     js_free(ctx, fd->cpool);
 
     JS_FreeAtom(ctx, fd->func_name);
+
+    for(i = 0; i < fd->ts_pprop_count; i++)
+        JS_FreeAtom(ctx, fd->ts_pprops[i].name);
+    js_free(ctx, fd->ts_pprops);
 
     for(i = 0; i < fd->var_count; i++) {
         JS_FreeAtom(ctx, fd->vars[i].var_name);
@@ -36398,6 +36585,14 @@ static __exception int js_parse_function_decl2(JSParseState *s,
     is_expr = (func_type != JS_PARSE_FUNC_STATEMENT &&
                func_type != JS_PARSE_FUNC_VAR);
 
+    if (!is_expr) {
+        int r = ts_try_skip_function_signature(s);
+        if (r < 0)
+            return -1;
+        if (r > 0)
+            return 0;               /* an overload signature: nothing to build */
+    }
+
     if (func_type == JS_PARSE_FUNC_STATEMENT ||
         func_type == JS_PARSE_FUNC_VAR ||
         func_type == JS_PARSE_FUNC_EXPR) {
@@ -36571,6 +36766,8 @@ static __exception int js_parse_function_decl2(JSParseState *s,
             goto fail;
         fd->defined_arg_count = 1;
     } else if (func_type != JS_PARSE_FUNC_CLASS_STATIC_INIT) {
+        if (ts_type_params(s))
+            goto fail;
         if (s->token.val == '(') {
             int skip_bits;
             /* if there is an '=' inside the parameter list, we
@@ -36594,8 +36791,23 @@ static __exception int js_parse_function_decl2(JSParseState *s,
         while (s->token.val != ')') {
             JSAtom name;
             BOOL rest = FALSE;
+            BOOL is_param_prop = FALSE;
             int idx, has_initializer;
 
+            if (ts_param_modifiers(s) > 0)
+                is_param_prop = TRUE;
+            if (s->ts && s->token.val == TOK_THIS) {
+                /* TypeScript `this` parameter: type-only, not an argument */
+                if (next_token(s))
+                    goto fail;
+                if (ts_annotation(s))
+                    goto fail;
+                if (s->token.val == ')')
+                    break;
+                if (js_parse_expect(s, ','))
+                    goto fail;
+                continue;
+            }
             if (s->token.val == TOK_ELLIPSIS) {
                 if (func_type == JS_PARSE_FUNC_SETTER)
                     goto fail_accessor;
@@ -36642,7 +36854,11 @@ static __exception int js_parse_function_decl2(JSParseState *s,
                 idx = add_arg(ctx, fd, name);
                 if (idx < 0)
                     goto fail;
+                if (is_param_prop)
+                    ts_record_param_prop(s, name, idx);
                 if (next_token(s))
+                    goto fail;
+                if (ts_opt_marker(s) || ts_annotation(s))
                     goto fail;
                 if (rest) {
                     emit_op(s, OP_rest);
@@ -36755,6 +36971,15 @@ static __exception int js_parse_function_decl2(JSParseState *s,
 
     if (next_token(s))
         goto fail;
+
+    if (ts_annotation(s))
+        goto fail;
+
+    /* A base-class constructor has `this` from the start, so its parameter
+       properties are assigned before the body. A derived one has to wait for
+       super(); see the two call sites below. */
+    if (func_type == JS_PARSE_FUNC_CLASS_CONSTRUCTOR)
+        ts_emit_param_props(s);
 
     /* generator function: yield after the parameters are evaluated */
     if (func_kind == JS_FUNC_GENERATOR ||
@@ -37082,6 +37307,8 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
     JSModuleDef *m;
 
     js_parse_init(ctx, s, input, input_len, filename);
+    s->ts = (flags & JS_EVAL_FLAG_TYPESCRIPT) != 0;
+    s->jsx = (flags & JS_EVAL_FLAG_JSX) != 0;
     skip_shebang(&s->buf_ptr, s->buf_end);
 
     eval_type = flags & JS_EVAL_TYPE_MASK;

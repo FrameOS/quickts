@@ -345,6 +345,24 @@ static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int64_t d)
 /* allow top-level await in normal script. JS_Eval() returns a
    promise. Only allowed with JS_EVAL_TYPE_GLOBAL */
 #define JS_EVAL_FLAG_ASYNC (1 << 7)
+/* erase TypeScript syntax while parsing (quickts) */
+#define JS_EVAL_FLAG_TYPESCRIPT (1 << 8)
+/* lower JSX elements to factory calls (quickts) */
+#define JS_EVAL_FLAG_JSX (1 << 9)
+/* the two flags a file's extension implies (.ts/.mts/.tsx/.jsx) */
+static inline int quickts_eval_flags(const char *filename)
+{
+    size_t n = filename ? strlen(filename) : 0;
+    if (n >= 4 && !memcmp(filename + n - 4, ".tsx", 4))
+        return JS_EVAL_FLAG_TYPESCRIPT | JS_EVAL_FLAG_JSX;
+    if (n >= 4 && !memcmp(filename + n - 4, ".mts", 4))
+        return JS_EVAL_FLAG_TYPESCRIPT;
+    if (n >= 3 && !memcmp(filename + n - 3, ".ts", 3))
+        return JS_EVAL_FLAG_TYPESCRIPT;
+    if (n >= 4 && !memcmp(filename + n - 4, ".jsx", 4))
+        return JS_EVAL_FLAG_JSX;
+    return 0;
+}
 
 typedef JSValue JSCFunction(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
 typedef JSValue JSCFunctionMagic(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv, int magic);

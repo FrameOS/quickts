@@ -352,6 +352,11 @@ static void compile_file(JSContext *ctx, FILE *fo,
         eval_flags |= JS_EVAL_TYPE_MODULE;
     else
         eval_flags |= JS_EVAL_TYPE_GLOBAL;
+    eval_flags |= quickts_eval_flags(filename);
+    if (getenv("QJSC_TYPESCRIPT"))
+        eval_flags |= JS_EVAL_FLAG_TYPESCRIPT;
+    if (getenv("QJSC_JSX"))
+        eval_flags |= JS_EVAL_FLAG_JSX;
     obj = JS_Eval(ctx, (const char *)buf, buf_len, filename, eval_flags);
     if (JS_IsException(obj)) {
         js_std_dump_error(ctx);
