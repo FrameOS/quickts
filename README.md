@@ -289,6 +289,21 @@ TypeScript module:
 The 312 bytes are a pointer and a count on each `JSFunctionDef`. Erasure
 alone is about 7 KB of the code; JSX and enums are the rest.
 
+## Releases
+
+A quickts release is named after the upstream release it sits on plus a
+counter: `2026-06-04-quickts.1` is the first quickts on top of QuickJS
+2026-06-04. `VERSION` carries that string, so `qjs --version` and
+`CONFIG_VERSION` say which one they are. Each release is a git tag
+(`v2026-06-04-quickts.1`) with a source tarball attached that unpacks to
+`quickjs-<version>/`, the same layout as Bellard's tarballs, so a build that
+fetched `quickjs-2026-06-04.tar.xz` only needs a new URL and checksum.
+
+FrameOS mirrors the tarball at
+`https://archive.frameos.net/source/vendor/quickjs-<version>.tar.xz` and
+publishes prebuilt `libquickjs.a` archives per distro/arch from it
+(`tools/prebuilt-deps` in the FrameOS repository).
+
 ## Merging upstream
 
 Add Bellard's repository as a remote and merge:
