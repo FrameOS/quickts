@@ -87,6 +87,41 @@ const multiline = (
 );
 assert(multiline.props.children === "first second", "multiline text is joined");
 
+// Whitespace, as TypeScript and Babel read it: only what touches a line break
+// goes; a run with no break keeps its edges.
+const after = <box>{input} items</box>;
+assert(after.props.children[1] === " items", "space after an expression is kept");
+const before = <box>items {input}</box>;
+assert(before.props.children[0] === "items ", "space before an expression is kept");
+const between = <box><a /> <b /></box>;
+assert(between.props.children.length === 3 && between.props.children[1] === " ",
+  "space between two elements on a line is kept");
+const afterElement = <box><b>bold</b> text</box>;
+assert(afterElement.props.children[1] === " text", "space after an element is kept");
+const padded = <box> x </box>;
+assert(padded.props.children === " x ", "a single-line run keeps its edges");
+const lines = (
+  <box>
+    a {input}
+    b
+  </box>
+);
+assert(lines.props.children[0] === "a " && lines.props.children[2] === "b",
+  "whitespace touching a line break goes");
+const firstLine = <box>  first
+  second</box>;
+assert(firstLine.props.children === "  first second", "the first line keeps its leading whitespace");
+const lastLine = <box>
+  last  </box>;
+assert(lastLine.props.children === "last  ", "the last line keeps its trailing whitespace");
+const stacked = (
+  <box>
+    <a />
+    <b />
+  </box>
+);
+assert(stacked.props.children.length === 2, "indentation between lines is not a child");
+
 const mixed = <box>a{input}b</box>;
 assert(mixed.props.children.length === 3, "three children");
 assert(mixed.props.children[0] === "a" && mixed.props.children[1] === 5, "child order");

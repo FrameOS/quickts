@@ -74,8 +74,12 @@ parser. Nothing about JavaScript changes unless you ask for it.
 
 Lower-case tags, and tags containing `-` or `:`, become strings; anything
 else is an expression. Attributes with no value are `true`; `{...spread}`
-spreads; string values have HTML entities decoded; child text is trimmed
-per line, joined with single spaces, and entity-decoded. An element with no
+spreads; string values have HTML entities decoded. Child text follows
+TypeScript's and Babel's rule: whitespace that touches a line break goes, a
+line with nothing else on it goes, and the lines left are joined with a single
+space and entity-decoded. Whitespace with no line break in it stays, so
+`{n} items` passes `" items"` and `<b>a</b> <i>b</i>` passes the `" "` between
+the two elements. An element with no
 attributes passes `null`, so a factory can tell `<a />` from `<a {...{}} />`.
 
 The factory and fragment names default to `__frameosJsx` and

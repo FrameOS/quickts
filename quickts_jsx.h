@@ -244,35 +244,50 @@ static void ts_jsx_entities(JSContext *ctx, TSBuf *out, const char *in, size_t l
     }
 }
 
-/* JSX text: split on newlines, trim each line, drop the empty ones, join the
-   rest with a single space, then decode entities. Note that a single-line
-   run is trimmed too (`<a> x </a>` yields "x"). */
+/* JSX text, as TypeScript and Babel read it: whitespace that touches a line
+   break goes, a line with nothing else on it goes, and the lines left are
+   joined with a single space before entities are decoded. Whitespace with no
+   line break in it stays: `{n} items` keeps " items", `<b>a</b> <b>c</b>`
+   keeps the " " between them and `<a> x </a>` is " x ". */
 static void ts_jsx_text(JSContext *ctx, TSBuf *out, const char *in, size_t len)
 {
     TSBuf raw;
-    size_t i = 0;
-    BOOL first = TRUE;
+    size_t i;
+    /* first non-space of the line, or none yet on a line after a break; the
+       first line starts at 0 so its leading whitespace is kept */
+    BOOL have_first = TRUE;
+    size_t first = 0;
+    BOOL have_last = FALSE; /* a non-space seen anywhere so far */
+    size_t last = 0;
+    BOOL joined = FALSE;
 
     ts_buf_init(&raw);
-    while (i < len) {
-        size_t start, end, j;
-        for (j = i; j < len && in[j] != '\n' && in[j] != '\r'; j++)
-            continue;
-        start = i;
-        end = j;
-        while (start < end && ts_jsx_space(in[start]))
-            start++;
-        while (end > start && ts_jsx_space(in[end - 1]))
-            end--;
-        if (end > start) {
-            if (!first)
-                ts_buf_putc(ctx, &raw, ' ');
-            ts_buf_put(ctx, &raw, in + start, end - start);
-            first = FALSE;
+    for (i = 0; i < len; i++) {
+        int c = (uint8_t)in[i];
+        if (c == '\n' || c == '\r') {
+            if (have_first && have_last) {
+                if (joined)
+                    ts_buf_putc(ctx, &raw, ' ');
+                ts_buf_put(ctx, &raw, in + first, last - first + 1);
+                joined = TRUE;
+            }
+            have_first = FALSE;
+        } else if (!ts_jsx_space(c)) {
+            last = i;
+            have_last = TRUE;
+            if (!have_first) {
+                first = i;
+                have_first = TRUE;
+            }
         }
-        i = (j < len) ? j + 1 : j;
-        if (j + 1 < len && in[j] == '\r' && in[j + 1] == '\n')
-            i = j + 2;
+    }
+    /* the last line keeps its trailing whitespace; a last line after a break
+       with nothing on it never set `first`. A run with no break at all is
+       kept whole, even when it is only spaces. */
+    if (have_first) {
+        if (joined)
+            ts_buf_putc(ctx, &raw, ' ');
+        ts_buf_put(ctx, &raw, in + first, len - first);
     }
     if (!raw.failed && raw.len > 0)
         ts_jsx_entities(ctx, out, raw.buf, raw.len);
