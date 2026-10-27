@@ -561,4 +561,5 @@ test-quickts: qjs$(EXE) qjsc$(EXE)
 	python3 tests/quickts/run.py ./qjs$(EXE)
 	sh tests/quickts/upstream_as_ts.sh
 	sh tests/quickts/bytecode_diff.sh
+	sh tests/quickts/tz.sh
 	sh tests/quickts/corpus_parse.sh

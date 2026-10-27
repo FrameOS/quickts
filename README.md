@@ -17,7 +17,7 @@ $ ./qjs hello.tsx        # needs a JSX factory in scope, see "JSX" below
 {"type":"card","props":{"mode":"Draft","children":"hi"}}
 ```
 
-This is upstream QuickJS (release 2026-06-04) plus **one commit**. Every
+This is upstream QuickJS (release 2026-06-04) plus a few commits. Every
 upstream file is untouched except for the small set of insertion points
 listed under [How it is wired in](#how-it-is-wired-in); the implementation
 lives in three new headers. The intent is that `git merge upstream/master`
@@ -88,6 +88,24 @@ make 'CFLAGS_OPT=$(CFLAGS) -O2 -DTS_JSX_FACTORY=\"h\" -DTS_JSX_FRAGMENT=\"Fragme
 
 or, in your own build, define `TS_JSX_FACTORY` / `TS_JSX_FRAGMENT` when
 compiling `quickjs.c`. They are read in `quickts_jsx.h`.
+
+**Small devices and embedders.** Three things an embedded build used to patch
+into `quickjs.c` from the outside:
+
+- `JS_MALLOC_ARENA_SIZE` (default 4096) is the arena the allocator carves
+  small blocks from, one list per size class. A heap keeps a partly empty
+  arena per class in use, which is most of the slack on a small one: FrameOS
+  builds its ESP32 firmware with `-DJS_MALLOC_ARENA_SIZE=1024`. One block of
+  the largest small size (512 bytes) must fit, or the build stops.
+- newlib (the ESP32's libc) has no `tm_gmtoff` and no `malloc_usable_size`.
+  quickts notices newlib and takes the local offset from `mktime()` instead,
+  and counts no usable size in the default allocator. `-DCONFIG_NO_TM_GMTOFF`
+  and `-DCONFIG_NO_MALLOC_USABLE_SIZE` ask for the same on another libc.
+- `JS_SetTimezoneOffsetFunc(func)` gives `Date` a local time zone that is not
+  libc's, for the whole process. `func(time)` returns what
+  `getTimezoneOffset()` would, minutes west of UTC, for `time` in
+  milliseconds since the epoch; `NULL` goes back to libc. FrameOS's browser
+  preview uses it to run on the frame's zone instead of the browser's.
 
 ## What is supported
 
@@ -220,13 +238,16 @@ helpers and `js_parse_error()`; the other two are included from it.
 ### How it is wired in
 
 The hooks in `quickjs.c`, in file order. Each is a few lines guarded by
-`s->ts` or `s->jsx`; the whole set is 216 added lines in 39 hunks, with
-5 upstream lines modified, and `git diff 3d5e064e9d -- quickjs.c` shows all
+`s->ts` or `s->jsx`, except the three for small devices; the whole set is
+271 added lines in 44 hunks, with 5 upstream lines modified, and `git diff 3d5e064e9d -- quickjs.c` shows all
 of them.
 
 | where | what it handles |
 |---|---|
 | `JSFunctionDef` | lazily allocated list of constructor parameter properties |
+| JS malloc defines, `JSMallocArena` | `JS_MALLOC_ARENA_SIZE` as a default, and the check that a block fits |
+| `js_def_malloc_usable_size` | newlib, `CONFIG_NO_MALLOC_USABLE_SIZE` |
+| `getTimezoneOffset` | `JS_SetTimezoneOffsetFunc`; newlib, `CONFIG_NO_TM_GMTOFF` |
 | `JSParseState` | the `ts` / `jsx` flags and four bits of lookahead state |
 | `js_parse_skip_parens_token` | the arrow lookahead continues past a return type |
 | `js_parse_property_name` | `foo<T>() {}` methods, in classes and object literals |
@@ -242,7 +263,8 @@ of them.
 | `js_parse_function_decl2` | overload signatures, type parameters, `this` and typed parameters, return types, parameter-property assignment |
 | `__JS_EvalInternal` | reads the two flags |
 
-`quickjs.h` gains the two flags and `quickts_eval_flags()`. `qjs.c`,
+`quickjs.h` gains the two flags, `quickts_eval_flags()` and
+`JS_SetTimezoneOffsetFunc()`. `qjs.c`,
 `qjsc.c` and the module loader in `quickjs-libc.c` map file extensions to
 flags. The `Makefile` gains `test-quickts`.
 
@@ -254,7 +276,7 @@ make test       # upstream's suite, unchanged
 make test-quickts
 ```
 
-`test-quickts` runs four things:
+`test-quickts` runs five things:
 
 - **`tests/quickts/run.py`** — self-checking `.ts` / `.tsx` files that must
   print `ok`, plus `xfail/` files that must keep failing. A `.js` case is run
@@ -264,6 +286,9 @@ make test-quickts
 - **`bytecode_diff.sh`** — compiles JavaScript with `qjsc` twice, both passes
   off and both forced on, and requires byte-identical output. This is the
   direct check on the only failure that matters for shipped code.
+- **`tz.sh`** — builds `tests/quickts/test_tz.c` twice, once with
+  `CONFIG_NO_TM_GMTOFF`, and checks `getTimezoneOffset()` and the local date
+  fields against libc in seven zones, summer and winter, then the hook.
 - **`corpus_parse.sh`** — parses a corpus and reports syntax errors by
   message. With no arguments it uses the bundled sample apps; point it at a
   real project with `$(git ls-files '*.ts' '*.tsx')`. The FrameOS repository

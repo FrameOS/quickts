@@ -349,6 +349,13 @@ static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int64_t d)
 #define JS_EVAL_FLAG_TYPESCRIPT (1 << 8)
 /* lower JSX elements to factory calls (quickts) */
 #define JS_EVAL_FLAG_JSX (1 << 9)
+
+/* quickts: Date's local time zone, for an embedder whose zone is not libc's.
+   The function returns what getTimezoneOffset() does (minutes west of UTC) at
+   `time`, in milliseconds since the epoch. NULL, the default, asks libc. One
+   setting for the whole process. */
+typedef int JSTimezoneOffsetFunc(int64_t time);
+void JS_SetTimezoneOffsetFunc(JSTimezoneOffsetFunc *func);
 /* the two flags a file's extension implies (.ts/.mts/.tsx/.jsx) */
 static inline int quickts_eval_flags(const char *filename)
 {

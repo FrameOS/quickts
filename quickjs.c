@@ -241,7 +241,12 @@ typedef enum OPCodeEnum OPCodeEnum;
 /* JS malloc */
 
 #define JS_MALLOC_ALIGN 8
+/* quickts: a build may choose a smaller arena (-DJS_MALLOC_ARENA_SIZE=1024).
+   A heap keeps a partly empty arena per size class in use, which is most of
+   the slack on a small one; one block of the largest size must still fit. */
+#ifndef JS_MALLOC_ARENA_SIZE
 #define JS_MALLOC_ARENA_SIZE 4096
+#endif
 #define JS_MALLOC_BLOCK_SIZE_COUNT 31
 #define JS_MALLOC_MIN_SMALL_SIZE 16
 #define JS_MALLOC_MAX_SMALL_SIZE 512
@@ -300,6 +305,10 @@ typedef struct {
     /* n_blocks memory blocks of identical size */
     __attribute__((aligned(JS_MALLOC_ALIGN))) uint8_t blocks[];
 } JSMallocArena;
+
+/* quickts: JS_MALLOC_ARENA_SIZE must hold the arena header and one
+   JS_MALLOC_MAX_SMALL_SIZE block. */
+typedef char js_malloc_arena_size_check[(JS_MALLOC_ARENA_SIZE >= (int)sizeof(JSMallocArena) + JS_MALLOC_MAX_SMALL_SIZE) ? 1 : -1];
 
 typedef struct {
     struct list_head arena_list[JS_MALLOC_BLOCK_SIZE_COUNT]; /* list of JSMallocArena.link (all arenas) */
@@ -2144,6 +2153,9 @@ static size_t js_def_malloc_usable_size(const void *ptr)
     return 0;
 #elif defined(__linux__) || defined(__GLIBC__)
     return malloc_usable_size((void *)ptr);
+#elif defined(CONFIG_NO_MALLOC_USABLE_SIZE) || (defined(__NEWLIB__) && !defined(__CYGWIN__))
+    /* quickts: newlib has none (the ESP32) */
+    return 0;
 #else
     /* change this to `return 0;` if compilation fails */
     return malloc_usable_size((void *)ptr);
@@ -47451,11 +47463,21 @@ static const JSCFunctionListEntry js_math_obj[] = {
 
 /* OS dependent. d = argv[0] is in ms from 1970. Return the difference
    between UTC time and local time 'd' in minutes */
+/* quickts: an embedder's own local time zone (JS_SetTimezoneOffsetFunc) */
+static JSTimezoneOffsetFunc *js_timezone_offset_func;
+
+void JS_SetTimezoneOffsetFunc(JSTimezoneOffsetFunc *func)
+{
+    js_timezone_offset_func = func;
+}
+
 static int getTimezoneOffset(int64_t time)
 {
     time_t ti;
     int res;
 
+    if (js_timezone_offset_func) /* quickts */
+        return js_timezone_offset_func(time);
     time /= 1000; /* convert to seconds */
     if (sizeof(time_t) == 4) {
         /* on 32-bit systems, we need to clamp the time value to the
@@ -47494,6 +47516,23 @@ static int getTimezoneOffset(int64_t time)
         loc_ti = mktime(tm);
 
         res = (gm_ti - loc_ti) / 60;
+    }
+#elif defined(CONFIG_NO_TM_GMTOFF) || (defined(__NEWLIB__) && !defined(__TM_GMTOFF))
+    {
+        /* quickts: no tm_gmtoff (newlib, as on the ESP32). The UTC fields of
+           `ti` read back as local wall time come out the offset earlier than
+           `ti`. The local DST flag goes with them, or a zone in summer time
+           is an hour short. */
+        struct tm loc_tm, gm_tm;
+        time_t gm_ti;
+
+        if (!localtime_r(&ti, &loc_tm) || !gmtime_r(&ti, &gm_tm))
+            return 0;
+        gm_tm.tm_isdst = loc_tm.tm_isdst;
+        gm_ti = mktime(&gm_tm);
+        if (gm_ti == (time_t)-1)
+            return 0;
+        res = (gm_ti - ti) / 60;
     }
 #else
     {
