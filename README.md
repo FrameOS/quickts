@@ -243,7 +243,7 @@ helpers and `js_parse_error()`; the other two are included from it.
 
 The hooks in `quickjs.c`, in file order. Each is a few lines guarded by
 `s->ts` or `s->jsx`, except the three for small devices; the whole set is
-271 added lines in 44 hunks, with 5 upstream lines modified, and `git diff 3d5e064e9d -- quickjs.c` shows all
+272 added lines in 45 hunks, with 6 upstream lines modified, and `git diff 3d5e064e9d -- quickjs.c` shows all
 of them.
 
 | where | what it handles |
