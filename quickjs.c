@@ -22054,6 +22054,7 @@ typedef struct JSParseState {
     BOOL ext_json; /* JSON parsing: true if accepting JSON superset */
     BOOL ts; /* quickts: erase TypeScript type syntax */
     BOOL jsx; /* quickts: lower JSX to factory calls */
+    BOOL jsx_blocks; /* quickts: lower JSX to a template plus holes */
     int ts_quiet; /* quickts: inside a speculative parse, raise no error */
     BOOL ts_member_erase; /* quickts: class member had abstract/declare */
     BOOL ts_cond_true; /* quickts: next assignment expr is a `?` branch */
@@ -37320,7 +37321,8 @@ static JSValue __JS_EvalInternal(JSContext *ctx, JSValueConst this_obj,
 
     js_parse_init(ctx, s, input, input_len, filename);
     s->ts = (flags & JS_EVAL_FLAG_TYPESCRIPT) != 0;
-    s->jsx = (flags & JS_EVAL_FLAG_JSX) != 0;
+    s->jsx_blocks = (flags & JS_EVAL_FLAG_JSX_BLOCKS) != 0;
+    s->jsx = (flags & JS_EVAL_FLAG_JSX) != 0 || s->jsx_blocks;
     skip_shebang(&s->buf_ptr, s->buf_end);
 
     eval_type = flags & JS_EVAL_TYPE_MASK;

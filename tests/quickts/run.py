@@ -4,6 +4,9 @@
 Every case is a self-checking file executed by `qjs`:
 
   cases/*.ts, *.tsx   TypeScript / TSX. Must run to completion and print `ok`.
+                      A .tsx / .jsx case runs twice: with the factory
+                      lowering, and with QJS_JSX_BLOCKS=1 (the block
+                      lowering) and `blocks` as its argument.
   cases/*.js          Plain JavaScript run once as-is and once renamed to
                       .tsx (both erasure passes on), to prove the passes
                       never change JavaScript semantics.
@@ -23,8 +26,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 QJS = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "..", "qjs")
 
 
-def run(path):
-    p = subprocess.run([QJS, path], capture_output=True, text=True, timeout=30)
+def run(path, blocks=False):
+    env = dict(os.environ)
+    args = [QJS, path]
+    if blocks:
+        env["QJS_JSX_BLOCKS"] = "1"
+        args.append("blocks")
+    p = subprocess.run(args, capture_output=True, text=True, timeout=30, env=env)
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
@@ -55,6 +63,13 @@ def main():
         else:
             failed += 1
             failures.append((name, out))
+        if name.endswith(".tsx") or name.endswith(".jsx"):
+            code, out = run(path, blocks=True)
+            if code == 0 and out == "ok":
+                passed += 1
+            else:
+                failed += 1
+                failures.append((name + " (blocks)", out))
 
     print("quickts cases: %d passed, %d failed" % (passed, failed))
     for name, out in failures:

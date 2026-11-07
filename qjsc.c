@@ -357,6 +357,8 @@ static void compile_file(JSContext *ctx, FILE *fo,
         eval_flags |= JS_EVAL_FLAG_TYPESCRIPT;
     if (getenv("QJSC_JSX"))
         eval_flags |= JS_EVAL_FLAG_JSX;
+    if (getenv("QJSC_JSX_BLOCKS"))
+        eval_flags |= JS_EVAL_FLAG_JSX_BLOCKS;
     obj = JS_Eval(ctx, (const char *)buf, buf_len, filename, eval_flags);
     if (JS_IsException(obj)) {
         js_std_dump_error(ctx);
