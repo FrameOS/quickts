@@ -349,9 +349,6 @@ static inline JSValue __JS_NewShortBigInt(JSContext *ctx, int64_t d)
 #define JS_EVAL_FLAG_TYPESCRIPT (1 << 8)
 /* lower JSX elements to factory calls (quickts) */
 #define JS_EVAL_FLAG_JSX (1 << 9)
-/* lower JSX elements to block calls: one static template per site, its
-   expressions as arguments (quickts; implies JS_EVAL_FLAG_JSX) */
-#define JS_EVAL_FLAG_JSX_BLOCKS (1 << 10)
 
 /* quickts: Date's local time zone, for an embedder whose zone is not libc's.
    The function returns what getTimezoneOffset() does (minutes west of UTC) at

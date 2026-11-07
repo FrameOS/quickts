@@ -29,27 +29,6 @@ const __frameosJsx = (type: unknown, props: any, ...children: unknown[]) => {
   }
   return { type, props: nextProps };
 };
-// The block lowering's factory (QJS_JSX_BLOCKS=1): the template expanded the
-// way __frameosJsx would have been called. See 15-jsx-blocks.tsx.
-const __frameosBlock = (template: unknown[], ...holes: unknown[]) => {
-  const fill = (v: unknown): unknown =>
-    typeof v === "number" ? (v < 0 ? holes[-1 - v] : v) : Array.isArray(v) ? node(v) : v;
-  const node = (t: any[]): unknown => {
-    let props: any = null;
-    if (t[1] !== null) {
-      props = {};
-      for (let i = 0; i < t[1].length; i += 2) {
-        const value = fill(t[1][i + 1]);
-        if (t[1][i] === null) Object.assign(props, value);
-        else props[t[1][i]] = value;
-      }
-    }
-    const children: unknown[] = [];
-    for (let i = 2; i < t.length; i++) children.push(fill(t[i]));
-    return __frameosJsx(t[0] === null ? __frameosFragment : fill(t[0]), props, ...children);
-  };
-  return node(template);
-};
 
 // --- lower-case tags become strings, capitalised ones stay expressions -----
 const plain = <image />;

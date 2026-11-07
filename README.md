@@ -45,12 +45,11 @@ The same rule applies to modules loaded through `import`. `QJSC_TYPESCRIPT=1`
 and `QJSC_JSX=1` force a pass on in `qjsc` regardless of extension, which is
 what the bytecode-diff test uses.
 
-**C API.** Three new `JS_Eval` flags:
+**C API.** Two new `JS_Eval` flags:
 
 ```c
 #define JS_EVAL_FLAG_TYPESCRIPT (1 << 8)   /* erase TypeScript syntax */
 #define JS_EVAL_FLAG_JSX        (1 << 9)   /* lower JSX to factory calls */
-#define JS_EVAL_FLAG_JSX_BLOCKS (1 << 10)  /* lower JSX to block calls (implies JSX) */
 
 /* the flags an extension implies: .ts .mts .tsx .jsx */
 static inline int quickts_eval_flags(const char *filename);
@@ -93,37 +92,6 @@ make 'CFLAGS_OPT=$(CFLAGS) -O2 -DTS_JSX_FACTORY=\"h\" -DTS_JSX_FRAGMENT=\"Fragme
 
 or, in your own build, define `TS_JSX_FACTORY` / `TS_JSX_FRAGMENT` when
 compiling `quickjs.c`. They are read in `quickts_jsx.h`.
-
-**JSX blocks.** With `JS_EVAL_FLAG_JSX_BLOCKS` (`QJS_JSX_BLOCKS=1` for `qjs`,
-`QJSC_JSX_BLOCKS=1` for `qjsc`) a site lowers to one call instead: what never
-changes is gathered into a template, and the expressions are its arguments,
-the holes:
-
-```jsx
-<tag a={x} b="y" flag>{child}text<i /></tag>
-// → __frameosBlock(T, x, child)
-//   T = ["tag", ["a", -1, "b", "y", "flag", true], -2, "text", ["i", null]]
-```
-
-A node is `[tag, props, ...children]`: the tag a string for an intrinsic
-element, `null` for a fragment, a hole for a component (`Comp`, `Comp.Inner`,
-evaluated first); props `null` when there are no attributes, else
-`[name, value, name, value, ...]` in source order with a `null` name for a
-`{...spread}`; a value a string, a number, `true`, a hole or a nested node; a
-child a string, a number, a hole or a nested node. A hole is `-1 - i` for the
-i-th argument after the template, and every expression is one, evaluated at
-the call in source order, except a `{}` holding a single number or string
-literal, which is static (a static number is never negative, so a negative
-number is always a hole). Nested elements are part of the same template; an
-element inside a `{}` is a site of its own. The template is one object per
-site, built when the site is parsed, sealed (read-only elements, not
-extensible) and pushed from the function's constant pool, so it is the same
-object on every evaluation and a consumer may cache what it read from it by
-identity; through `qjsc` it travels as a template object, the way a tagged
-template's strings do. The call is `__frameosBlock` by default
-(`-DTS_JSX_BLOCK=\"h\"` changes it), resolved as a free variable at the site;
-`tests/quickts/cases/15-jsx-blocks.tsx` has a reference expansion that
-reproduces the factory's result from a template and its holes.
 
 **Small devices and embedders.** Three things an embedded build used to patch
 into `quickjs.c` from the outside:
@@ -284,7 +252,7 @@ of them.
 | JS malloc defines, `JSMallocArena` | `JS_MALLOC_ARENA_SIZE` as a default, and the check that a block fits |
 | `js_def_malloc_usable_size` | newlib, `CONFIG_NO_MALLOC_USABLE_SIZE` |
 | `getTimezoneOffset` | `JS_SetTimezoneOffsetFunc`; newlib, `CONFIG_NO_TM_GMTOFF` |
-| `JSParseState` | the `ts` / `jsx` / `jsx_blocks` flags and four bits of lookahead state |
+| `JSParseState` | the `ts` / `jsx` flags and four bits of lookahead state |
 | `js_parse_skip_parens_token` | the arrow lookahead continues past a return type |
 | `js_parse_property_name` | `foo<T>() {}` methods, in classes and object literals |
 | `js_parse_class` | class type parameters, `extends B<T>`, `implements`, member modifiers, index signatures, bodiless members, `?` / `!` / `: T` on fields |
@@ -297,13 +265,12 @@ of them.
 | `js_parse_statement_or_decl` | `interface`, `type`, `declare`, `namespace`, `enum`, `abstract class`, `catch (e: T)` |
 | `js_parse_export` / `js_parse_import` | `export type`, `export enum`, `export default abstract class`, `import type`, inline `type` specifiers |
 | `js_parse_function_decl2` | overload signatures, type parameters, `this` and typed parameters, return types, parameter-property assignment |
-| `__JS_EvalInternal` | reads the three flags |
+| `__JS_EvalInternal` | reads the two flags |
 
-`quickjs.h` gains the three flags, `quickts_eval_flags()` and
+`quickjs.h` gains the two flags, `quickts_eval_flags()` and
 `JS_SetTimezoneOffsetFunc()`. `qjs.c`,
 `qjsc.c` and the module loader in `quickjs-libc.c` map file extensions to
-flags (`QJS_JSX_BLOCKS` / `QJSC_JSX_BLOCKS` in the environment add the block
-lowering). The `Makefile` gains `test-quickts`.
+flags. The `Makefile` gains `test-quickts`.
 
 ## Tests
 
@@ -313,23 +280,16 @@ make test       # upstream's suite, unchanged
 make test-quickts
 ```
 
-`test-quickts` runs six things:
+`test-quickts` runs five things:
 
 - **`tests/quickts/run.py`** — self-checking `.ts` / `.tsx` files that must
   print `ok`, plus `xfail/` files that must keep failing. A `.js` case is run
-  twice, as itself and renamed to `.tsx`, and both must agree. A `.tsx` /
-  `.jsx` case also runs twice, under the factory lowering and the block
-  lowering (`QJS_JSX_BLOCKS=1`, with `blocks` as its argument), and the same
-  assertions must hold: the two lowerings make the same elements.
+  twice, as itself and renamed to `.tsx`, and both must agree.
 - **`upstream_as_ts.sh`** — QuickJS's own test suite copied to `.ts` and
   `.tsx`. Every file is plain JavaScript; the passes must change nothing.
 - **`bytecode_diff.sh`** — compiles JavaScript with `qjsc` twice, both passes
-  off and both forced on (the JSX pass as blocks), and requires byte-identical
-  output. This is the direct check on the only failure that matters for
-  shipped code.
-- **`blocks_bytecode.sh`** — compiles the blocks case with `qjsc`, links it
-  and runs it: a site's template survives the trip through bytecode, nested
-  arrays included.
+  off and both forced on, and requires byte-identical output. This is the
+  direct check on the only failure that matters for shipped code.
 - **`tz.sh`** — builds `tests/quickts/test_tz.c` twice, once with
   `CONFIG_NO_TM_GMTOFF`, and checks `getTimezoneOffset()` and the local date
   fields against libc in seven zones, summer and winter, then the hook.
@@ -356,9 +316,7 @@ TypeScript module:
 | peak parser heap | 159,452 B | 159,764 B (+312 B) |
 
 The 312 bytes are a pointer and a count on each `JSFunctionDef`. Erasure
-alone is about 7 KB of the code; JSX and enums are the rest. The block
-lowering (quickts.3) is another 4,355 B of `-Os` text on arm64 and nothing
-per parse unless the flag is on.
+alone is about 7 KB of the code; JSX and enums are the rest.
 
 ## Releases
 
@@ -369,15 +327,6 @@ counter: `2026-06-04-quickts.1` is the first quickts on top of QuickJS
 (`v2026-06-04-quickts.1`) with a source tarball attached that unpacks to
 `quickjs-<version>/`, the same layout as Bellard's tarballs, so a build that
 fetched `quickjs-2026-06-04.tar.xz` only needs a new URL and checksum.
-
-- **`2026-06-04-quickts.3`** — `JS_EVAL_FLAG_JSX_BLOCKS`, the block
-  lowering of JSX (a sealed template per site plus holes); builds with
-  glibc 2.43's `const`-returning `strrchr` / `strstr`.
-- **`2026-06-04-quickts.2`** — `JS_MALLOC_ARENA_SIZE` as a default, newlib's
-  missing `tm_gmtoff` / `malloc_usable_size` handled, `JS_SetTimezoneOffsetFunc`,
-  JSX text whitespace as TypeScript reads it.
-- **`2026-06-04-quickts.1`** — TypeScript erasure, enums, parameter
-  properties, JSX.
 
 FrameOS mirrors the tarball at
 `https://archive.frameos.net/source/vendor/quickjs-<version>.tar.xz` and

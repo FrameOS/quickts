@@ -2,9 +2,8 @@
 # Differential bytecode test.
 #
 # Compile each plain-JavaScript file twice with qjsc -- both passes off, then
-# TypeScript *and* JSX (its block lowering) forced on via QJSC_TYPESCRIPT /
-# QJSC_JSX_BLOCKS -- and diff the emitted bytecode. Any difference means a
-# hook fired on JavaScript.
+# TypeScript *and* JSX forced on via QJSC_TYPESCRIPT / QJSC_JSX -- and diff
+# the emitted bytecode. Any difference means a hook fired on JavaScript.
 #
 # Usage: sh tests/quickts/bytecode_diff.sh [file.js ...]
 # With no arguments, QuickJS's own tests and examples are used.
@@ -27,7 +26,7 @@ for f in "$@"; do
     skipped=$((skipped + 1))
     continue
   fi
-  if ! QJSC_TYPESCRIPT=1 QJSC_JSX_BLOCKS=1 "$qjsc" -c -o "$tmp/b.c" -N a "$f" >/dev/null 2>&1; then
+  if ! QJSC_TYPESCRIPT=1 QJSC_JSX=1 "$qjsc" -c -o "$tmp/b.c" -N a "$f" >/dev/null 2>&1; then
     echo "  FAILS WITH THE PASSES ON  $f"
     differ=$((differ + 1))
     continue
